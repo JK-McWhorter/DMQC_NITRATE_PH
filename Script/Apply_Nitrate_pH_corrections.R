@@ -655,6 +655,7 @@ for (woko in float_ids) {
       group_by(x, y) %>%
       summarise(z = mean(z, na.rm = TRUE), .groups = "drop")
     
+    # 1. Require at least 5 observations spread across multiple cycles and depths
     if (nrow(clean_df) < 5 || length(unique(clean_df$x)) < 2 || length(unique(clean_df$y)) < 2) {
       return(NULL)
     }
@@ -663,6 +664,7 @@ for (woko in float_ids) {
       return(NULL)
     }
     
+    # 2. Attempt interpolation with safe error handling
     interp_res <- suppressWarnings(tryCatch({
       interp::interp(
         x = clean_df$x, 
@@ -676,18 +678,24 @@ for (woko in float_ids) {
       )
     }, error = function(e) return(NULL)))
     
+    # 3. Guard against NULL outputs or non-matrix list elements
     if (is.null(interp_res) || is.null(interp_res$z) || !is.matrix(interp_res$z)) {
       return(NULL)
     }
     
-    z_vector <- as.vector(interp_res$z)
-    expected_length <- grid_nx * grid_ny
-    
-    if (length(z_vector) != expected_length || all(is.na(z_vector))) {
+    # 4. Strict Matrix Dimension & Vector Length Verification
+    if (nrow(interp_res$z) != grid_nx || ncol(interp_res$z) != grid_ny) {
       return(NULL)
     }
     
-    grid_df <- expand.grid(x = interp_res$x, y = interp_res$y)
+    z_vector <- as.vector(interp_res$z)
+    grid_df  <- expand.grid(x = interp_res$x, y = interp_res$y)
+    
+    # Ensure vector length precisely equals the row count of grid_df (10,000)
+    if (length(z_vector) != nrow(grid_df) || all(is.na(z_vector))) {
+      return(NULL)
+    }
+    
     grid_df$z <- z_vector
     
     return(grid_df %>% filter(!is.na(z)))
