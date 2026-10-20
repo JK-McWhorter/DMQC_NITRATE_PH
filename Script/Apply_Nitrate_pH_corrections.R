@@ -93,7 +93,7 @@ launch_date_dict <- tibble::tribble(
 )
 
 # --- LOAD SAGE V2 CALIBRATION DATA ---
-calib_csv_path <- "C:/Users/Jennifer.McWhorter/Documents/GitHub/DMQC_NITRATE_PH/Data/Sage_v2_outputs/Sage_v2DMQC_14Oct2026_jm.csv"
+calib_csv_path <- "C:/Users/Jennifer.McWhorter/Documents/GitHub/DMQC_NITRATE_PH/Data/Sage_v2_outputs/Sage_v2DMQC_20Oct2026_jm.csv"
 
 if (file.exists(calib_csv_path)) {
   calib_df <- read.csv(calib_csv_path) %>%
@@ -158,7 +158,7 @@ qc_color_scale <- c(
 
 mode_levels      <- c("R-mode", "A-mode", "D-mode", "Bottle")
 color_mapping    <- c("R-mode" = "#5C4033", "A-mode" = "#FF7F00", "D-mode" = "#33A02C", "Bottle" = "#000000")
-linetype_mapping <- c("R-mode" = "solid",   "A-mode" = "solid",   "D-mode" = "solid",   "Bottle" = "blank")
+linetype_mapping <- c("R-mode" = "dashed",  "A-mode" = "dotdash", "D-mode" = "solid",   "Bottle" = "blank")
 shape_mapping    <- c("R-mode" = NA,        "A-mode" = NA,        "D-mode" = NA,        "Bottle" = 16)
 
 # =========================================================================
@@ -540,8 +540,21 @@ for (woko in float_ids) {
     # 1. NITRATE PROFILE PLOT
     if (any(df_sub$NITRATE_FINAL != -99999.0 & !is.na(df_sub$NITRATE_FINAL))) {
       df_nit_clean <- df_sub %>%
-        pivot_longer(cols = any_of(c("NITRATE", "NITRATE_ADJUSTED", "NITRATE_FINAL")), names_to = "Mode_Raw", values_to = "Nitrate") %>%
-        mutate(Mode = factor(case_when(Mode_Raw == "NITRATE" ~ "R-mode", Mode_Raw == "NITRATE_ADJUSTED" ~ "A-mode", TRUE ~ "D-mode"), levels = mode_levels)) %>%
+        pivot_longer(
+          cols = any_of(c("NITRATE", "NITRATE_ADJUSTED", "NITRATE_FINAL")), 
+          names_to = "Mode_Raw", 
+          values_to = "Nitrate"
+        ) %>%
+        mutate(
+          Mode = factor(
+            case_when(
+              Mode_Raw == "NITRATE" ~ "R-mode", 
+              Mode_Raw == "NITRATE_ADJUSTED" ~ "A-mode", 
+              Mode_Raw == "NITRATE_FINAL" ~ "D-mode"
+            ), 
+            levels = mode_levels
+          )
+        ) %>%
         filter(!is.na(Nitrate) & Nitrate != -99999.0 & !is.na(PRES) & PRES != -99999.0)
       
       df_nit_bottle <- df_bottle_sub %>% 
@@ -549,14 +562,16 @@ for (woko in float_ids) {
         select(PRES, Nitrate = NITRATE_Vali) %>%
         mutate(Mode = factor("Bottle", levels = mode_levels))
       
-      df_nit_combined <- bind_rows(df_nit_clean, df_nit_bottle) %>% arrange(Mode, PRES)
+      # Order rows so R-mode is rendered before D-mode to prevent total visual overlap
+      df_nit_combined <- bind_rows(df_nit_clean, df_nit_bottle) %>% 
+        arrange(factor(Mode, levels = c("R-mode", "A-mode", "D-mode", "Bottle")), PRES)
       
       if (nrow(df_nit_clean) > 0) {
         p_nit <- ggplot() +
           geom_path(
             data = filter(df_nit_combined, Mode != "Bottle"),
             aes(x = Nitrate, y = PRES, color = Mode, linetype = Mode),
-            linewidth = 0.6, alpha = 0.9
+            linewidth = 0.8, alpha = 0.85
           ) +
           geom_point(
             data = filter(df_nit_combined, Mode == "Bottle"),
@@ -564,7 +579,10 @@ for (woko in float_ids) {
             size = 2.5, alpha = 0.95
           ) +
           scale_color_manual(values = color_mapping, drop = FALSE) +
-          scale_linetype_manual(values = linetype_mapping, drop = FALSE) +
+          scale_linetype_manual(
+            values = c("R-mode" = "dashed", "A-mode" = "dotdash", "D-mode" = "solid", "Bottle" = "blank"), 
+            drop = FALSE
+          ) +
           scale_shape_manual(values = shape_mapping, drop = FALSE) +
           scale_y_reverse(limits = c(max(c(df_nit_combined$PRES, 2000), na.rm = TRUE), 0)) +
           scale_x_continuous(position = "top") +
@@ -578,7 +596,12 @@ for (woko in float_ids) {
           theme_bw() +
           theme(legend.position = "right") +
           guides(
-            color = guide_legend(override.aes = list(shape = shape_mapping, linetype = linetype_mapping, linewidth = c(0.8, 0.8, 0.8, 0), size = c(NA, NA, NA, 2.5))),
+            color = guide_legend(override.aes = list(
+              shape = shape_mapping, 
+              linetype = c("dashed", "dotdash", "solid", "blank"), 
+              linewidth = c(0.8, 0.8, 0.8, 0), 
+              size = c(NA, NA, NA, 2.5)
+            )),
             linetype = "none",
             shape = "none"
           )
@@ -591,8 +614,21 @@ for (woko in float_ids) {
     # 2. pH PROFILE PLOT
     if (any(df_sub$PH_FINAL != -99999.0 & !is.na(df_sub$PH_FINAL))) {
       df_ph_clean <- df_sub %>%
-        pivot_longer(cols = any_of(c("PH_IN_SITU_TOTAL", "PH_IN_SITU_TOTAL_ADJUSTED", "PH_FINAL")), names_to = "Mode_Raw", values_to = "pH") %>%
-        mutate(Mode = factor(case_when(Mode_Raw == "PH_IN_SITU_TOTAL" ~ "R-mode", Mode_Raw == "PH_IN_SITU_TOTAL_ADJUSTED" ~ "A-mode", TRUE ~ "D-mode"), levels = mode_levels)) %>%
+        pivot_longer(
+          cols = any_of(c("PH_IN_SITU_TOTAL", "PH_IN_SITU_TOTAL_ADJUSTED", "PH_FINAL")), 
+          names_to = "Mode_Raw", 
+          values_to = "pH"
+        ) %>%
+        mutate(
+          Mode = factor(
+            case_when(
+              Mode_Raw == "PH_IN_SITU_TOTAL" ~ "R-mode", 
+              Mode_Raw == "PH_IN_SITU_TOTAL_ADJUSTED" ~ "A-mode", 
+              Mode_Raw == "PH_FINAL" ~ "D-mode"
+            ), 
+            levels = mode_levels
+          )
+        ) %>%
         filter(!is.na(pH) & pH != -99999.0 & !is.na(PRES) & PRES != -99999.0)
       
       df_ph_bottle <- df_bottle_sub %>% 
@@ -600,14 +636,16 @@ for (woko in float_ids) {
         select(PRES, pH = PH_Vali) %>%
         mutate(Mode = factor("Bottle", levels = mode_levels))
       
-      df_ph_combined <- bind_rows(df_ph_clean, df_ph_bottle) %>% arrange(Mode, PRES)
+      # Order rows so R-mode is rendered before D-mode to prevent total visual overlap
+      df_ph_combined <- bind_rows(df_ph_clean, df_ph_bottle) %>% 
+        arrange(factor(Mode, levels = c("R-mode", "A-mode", "D-mode", "Bottle")), PRES)
       
       if (nrow(df_ph_clean) > 0) {
         p_ph <- ggplot() +
           geom_path(
             data = filter(df_ph_combined, Mode != "Bottle"),
             aes(x = pH, y = PRES, color = Mode, linetype = Mode),
-            linewidth = 0.6, alpha = 0.9
+            linewidth = 0.8, alpha = 0.85
           ) +
           geom_point(
             data = filter(df_ph_combined, Mode == "Bottle"),
@@ -615,7 +653,10 @@ for (woko in float_ids) {
             size = 2.5, alpha = 0.95
           ) +
           scale_color_manual(values = color_mapping, drop = FALSE) +
-          scale_linetype_manual(values = linetype_mapping, drop = FALSE) +
+          scale_linetype_manual(
+            values = c("R-mode" = "dashed", "A-mode" = "dotdash", "D-mode" = "solid", "Bottle" = "blank"), 
+            drop = FALSE
+          ) +
           scale_shape_manual(values = shape_mapping, drop = FALSE) +
           scale_y_reverse(limits = c(max(c(df_ph_combined$PRES, 2000), na.rm = TRUE), 0)) +
           scale_x_continuous(position = "top") +
@@ -629,7 +670,12 @@ for (woko in float_ids) {
           theme_bw() +
           theme(legend.position = "right") +
           guides(
-            color = guide_legend(override.aes = list(shape = shape_mapping, linetype = linetype_mapping, linewidth = c(0.8, 0.8, 0.8, 0), size = c(NA, NA, NA, 2.5))),
+            color = guide_legend(override.aes = list(
+              shape = shape_mapping, 
+              linetype = c("dashed", "dotdash", "solid", "blank"), 
+              linewidth = c(0.8, 0.8, 0.8, 0), 
+              size = c(NA, NA, NA, 2.5)
+            )),
             linetype = "none",
             shape = "none"
           )
