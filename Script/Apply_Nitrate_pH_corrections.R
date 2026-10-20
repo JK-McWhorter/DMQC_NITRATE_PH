@@ -93,7 +93,7 @@ launch_date_dict <- tibble::tribble(
 )
 
 # --- LOAD SAGE V2 CALIBRATION DATA ---
-calib_csv_path <- "C:/Users/Jennifer.McWhorter/Documents/Data/2026/DMQC_SageV2/Sage_v2DMQC_14Oct2026_jm.csv"
+calib_csv_path <- "C:/Users/Jennifer.McWhorter/Documents/GitHub/DMQC_NITRATE_PH/Data/Sage_v2_outputs/Sage_v2DMQC_14Oct2026_jm.csv"
 
 if (file.exists(calib_csv_path)) {
   calib_df <- read.csv(calib_csv_path) %>%
