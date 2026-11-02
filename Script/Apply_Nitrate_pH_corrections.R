@@ -1,14 +1,15 @@
 ### BGC-Argo NITRATE & pH Corrections DMQC Pipeline
 ### Integrated DMQC processing using SAGE v2 per-cycle parameters
 ### Dataset: Sage_v2DMQC_14Oct2026_jm.csv
-### Updated: October 2026
+### Updated: Distinct mapping for A-mode (ADJUSTED) and D-mode (FINAL)
+### Updated: November 2026
 
 # =========================================================================
 # 1. ENVIRONMENT CLEANUP & PACKAGE INITIALIZATION
 # =========================================================================
 
 cat("\014")
-rm(list = ls()) # Clean global environment at start of execution
+rm(list = ls())
 
 required_pkgs <- c("dplyr", "ggplot2", "lubridate", "gridExtra", "tidyverse", 
                    "ggeffects", "mapdata", "suncalc", "ncdf4", "oce", "terra", 
@@ -25,6 +26,18 @@ for (pkg in required_pkgs) {
 options(timeout = 600)
 options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
+# Helper function to convert numeric and character representation of fill values to NaN
+convert_fill_to_nan <- function(df, fill_vals = c("-99999", "-99999.0", "99999", "99999.0", "-9999")) {
+  df %>%
+    mutate(
+      across(where(is.numeric), ~ ifelse(. %in% as.numeric(fill_vals), NaN, .)),
+      across(where(is.character), ~ {
+        trimmed <- str_trim(.)
+        ifelse(trimmed %in% fill_vals | trimmed %in% c("NA", "NaN"), NA_character_, .)
+      })
+    )
+}
+
 clean_corrupt_file <- function(filepath) {
   if (file.exists(filepath)) {
     if (file.info(filepath)$size == 0) {
@@ -35,7 +48,6 @@ clean_corrupt_file <- function(filepath) {
   return(FALSE)
 }
 
-# Helper function to attempt download with fallback URLs if missing/corrupt
 download_if_missing <- function(local_path, primary_url, fallback_url = NULL) {
   if (clean_corrupt_file(local_path) || !file.exists(local_path)) {
     try(download.file(primary_url, local_path, quiet = TRUE, mode = "wb", method = "libcurl", cacheOK = TRUE), silent = TRUE)
@@ -93,10 +105,11 @@ launch_date_dict <- tibble::tribble(
 )
 
 # --- LOAD SAGE V2 CALIBRATION DATA ---
-calib_csv_path <- "C:/Users/Jennifer.McWhorter/Documents/GitHub/DMQC_NITRATE_PH/Data/Sage_v2_outputs/Sage_v2DMQC_20Oct2026_jm.csv"
+calib_csv_path <- file.path(dir_data_root, "Sage_v2_outputs/Sage_v2DMQC_2Nov2026_jm.csv")
 
 if (file.exists(calib_csv_path)) {
-  calib_df <- read.csv(calib_csv_path) %>%
+  calib_df <- read.csv(calib_csv_path, stringsAsFactors = FALSE) %>%
+    convert_fill_to_nan() %>%
     mutate(
       float_ids    = as.numeric(WMOID),
       CYCLE_NUMBER = as.numeric(CYCLE)
@@ -119,10 +132,11 @@ if (file.exists(calib_csv_path)) {
 }
 
 # --- LOAD BOTTLE VALIDATION DATA ---
-path_bottle_val <- "C:/Users/Jennifer.McWhorter/Documents/GitHub/DMQC_NITRATE_PH/Data/Bottle_vali/Master_Vali_24_July_2025.csv"
+path_bottle_val <- file.path(dir_data_root, "Bottle_vali/Master_Vali_24_July_2025.csv")
 
 if (file.exists(path_bottle_val)) {
-  Bottle_Vali <- read.csv(path_bottle_val) %>%
+  Bottle_Vali <- read.csv(path_bottle_val, stringsAsFactors = FALSE) %>%
+    convert_fill_to_nan() %>%
     mutate(
       Float_num    = as.numeric(Float_num),
       CYCLE_NUMBER = as.numeric(CYCLE_NUMBER),
@@ -139,26 +153,27 @@ if (file.exists(path_bottle_val)) {
   )
 }
 
-cat("\n==============================================================================\n")
-cat("   SAGE V2 CALIBRATION DATASET INGESTION CHECK\n")
-cat("==============================================================================\n")
-print(knitr::kable(head(calib_df %>% select(float_ids, CYCLE_NUMBER, nitrate_gain, ph_gain)), format = "simple"))
-cat("==============================================================================\n\n")
-
 float_ids <- unique(calib_df$float_ids)
 today_str <- format(Sys.Date(), "%Y-%m-%d")
 
 url_argo_index <- "ftp://ftp.ifremer.fr/ifremer/argo/argo_bio-profile_index.txt"
 
+# Standard BGC-Argo QC Color Palette
 qc_color_scale <- c(
   "0" = "gray70", "1" = "#33A02C", "2" = "#B2DF8A", 
   "3" = "#FDBF6F", "4" = "#E31A1C", "5" = "#1F78B4", 
   "8" = "#CAB2D6", "9" = "black"
 )
 
+# Multi-mode plot aesthetics matching CHLA/DOXY pipeline:
+# - R-mode: Red, dotted line (Raw)
+# - A-mode: Brown, dashed line (Adjusted)
+# - D-mode: Green, solid line (Final DMQC)
+# - Bottle: Black points
 mode_levels      <- c("R-mode", "A-mode", "D-mode", "Bottle")
-color_mapping    <- c("R-mode" = "#5C4033", "A-mode" = "#FF7F00", "D-mode" = "#33A02C", "Bottle" = "#000000")
-linetype_mapping <- c("R-mode" = "dashed",  "A-mode" = "dotdash", "D-mode" = "solid",   "Bottle" = "blank")
+color_mapping    <- c("R-mode" = "#E31A1C", "A-mode" = "#8C510A", "D-mode" = "#33A02C", "Bottle" = "#000000")
+linetype_mapping <- c("R-mode" = "dotted",  "A-mode" = "dashed",  "D-mode" = "solid",   "Bottle" = "blank")
+linewidth_map    <- c("R-mode" = 0.8,       "A-mode" = 1.2,       "D-mode" = 0.9,       "Bottle" = 0)
 shape_mapping    <- c("R-mode" = NA,        "A-mode" = NA,        "D-mode" = NA,        "Bottle" = 16)
 
 # =========================================================================
@@ -168,7 +183,7 @@ shape_mapping    <- c("R-mode" = NA,        "A-mode" = NA,        "D-mode" = NA,
 index_file_path <- file.path(dir_tables, 'index.txt')
 download_if_missing(index_file_path, url_argo_index)
 
-index      <- read.table(index_file_path, skip = 9, sep = ",")
+index      <- read.table(index_file_path, skip = 9, sep = ",", stringsAsFactors = FALSE)
 files      <- as.character(index[, 1])
 ident      <- strsplit(files, "/")
 ident      <- matrix(unlist(ident), ncol = 4, byrow = TRUE)
@@ -197,7 +212,6 @@ for (woko in float_ids) {
     if (!dir.exists(p_dir)) dir.create(p_dir, recursive = TRUE)
   }
   
-  # Clean existing plots in QC_SUMMARIES before generating new ones
   unlink(list.files(dir_qc_summary, pattern = "\\.png$", full.names = TRUE))
   
   cat("\n==========================================\n")
@@ -214,10 +228,8 @@ for (woko in float_ids) {
   
   # --- STEP 1: DOWNLOAD & EXTRACT PROFILES ---
   for (kiwi in crit) {
-    print(c(woko, prof_id[kiwi]))
-    
-    if (substr(prof_id[kiwi], 14, 14) == "D") { print("Descent Profile"); next } 
-    if (is.na(time_index[kiwi])) { print("Time=NA"); next } 
+    if (substr(prof_id[kiwi], 14, 14) == "D") next 
+    if (is.na(time_index[kiwi])) next 
     
     www <- substr(prof_id[kiwi], 3, 13)
     profile_bio <- NULL
@@ -232,33 +244,24 @@ for (woko in float_ids) {
     d_file  <- file.path(dir_profs, paste0("D", www, ".nc"))
     r_file  <- file.path(dir_profs, paste0("R", www, ".nc"))
     
-    # Download Bio Profile (BD or BR) if missing
     if (!file.exists(bd_file) && !file.exists(br_file)) {
       primary_bio_url  <- paste0("ftp://ftp.ifremer.fr/ifremer/argo/dac/", files[kiwi])
       fallback_bio_url <- paste0("ftp://ftp.ifremer.fr/ifremer/argo/dac/", dac[kiwi], "/", wod[kiwi], "/profiles/", prof_id[kiwi])
       download_if_missing(file.path(dir_profs, prof_id[kiwi]), primary_bio_url, fallback_bio_url)
     }
+    if (!file.exists(bd_file) && !file.exists(br_file)) next
     
-    if (!file.exists(bd_file) && !file.exists(br_file)) {
-      print("no bio file"); next
-    }
-    
-    # Download Physical Profile (D or R) if missing
     if (!file.exists(d_file) && !file.exists(r_file)) {
       primary_d_url  <- paste0("ftp://ftp.ifremer.fr/ifremer/argo/dac/", dac[kiwi], "/", wod[kiwi], "/profiles/D", www, ".nc")
       fallback_d_url <- paste0("ftp://ftp.ifremer.fr/ifremer/argo/dac/", dac[kiwi], "/", wod[kiwi], "/D", www, ".nc")
       download_if_missing(d_file, primary_d_url, fallback_d_url)
     }
-    
     if (!file.exists(d_file) && !file.exists(r_file)) {
       primary_r_url  <- paste0("ftp://ftp.ifremer.fr/ifremer/argo/dac/", dac[kiwi], "/", wod[kiwi], "/profiles/R", www, ".nc")
       fallback_r_url <- paste0("ftp://ftp.ifremer.fr/ifremer/argo/dac/", dac[kiwi], "/", wod[kiwi], "/R", www, ".nc")
       download_if_missing(r_file, primary_r_url, fallback_r_url)
     }
-    
-    if (!file.exists(d_file) && !file.exists(r_file)) {
-      print("no phy file"); next
-    }
+    if (!file.exists(d_file) && !file.exists(r_file)) next
     
     active_bio_file <- if (file.exists(bd_file)) bd_file else br_file
     active_phy_file <- if (file.exists(d_file)) d_file else r_file
@@ -267,45 +270,31 @@ for (woko in float_ids) {
     profile_physic <- tryCatch(nc_open(active_phy_file, readunlim = FALSE, write = FALSE), error = function(e) NULL)
     
     if (is.null(profile_bio) || is.null(profile_physic)) {
-      print("corrupt or unreadable nc file")
       if (!is.null(profile_bio)) nc_close(profile_bio)
       if (!is.null(profile_physic)) nc_close(profile_physic)
       next
     }
     
-    position_qc <- substr(ncvar_get(profile_physic, "POSITION_QC"), 1, 1)
-    if (position_qc == 3 || position_qc == 4) print("bad position")
-    
     lat_val <- ncvar_get(profile_physic, "LATITUDE")[1]
     lon_val <- ncvar_get(profile_physic, "LONGITUDE")[1]
-    
     if (is.na(lat_val) || is.na(lon_val)) {
-      print("no geoloc")
-      nc_close(profile_bio); nc_close(profile_physic)
-      next
+      nc_close(profile_bio); nc_close(profile_physic); next
     }
     
     jd <- ncvar_get(profile_physic, "JULD")[1]
     origin <- as.POSIXct("1950-01-01 00:00:00", tz = "UTC") 
     time_val <- origin + jd * 3600 * 24
-    
     if (is.na(time_val)) {
-      print("bad date")
-      nc_close(profile_bio); nc_close(profile_physic)
-      next
+      nc_close(profile_bio); nc_close(profile_physic); next
     }
     
     pres <- as.vector(ncvar_get(profile_physic, "PRES"))
     pres_qc_raw <- ncvar_get(profile_physic, "PRES_QC")
-    if (is.matrix(pres_qc_raw)) {
-      pres_qc_str <- apply(pres_qc_raw, 2, function(x) paste(x, collapse = ""))
-    } else {
-      pres_qc_str <- paste(pres_qc_raw, collapse = "")
-    }
+    pres_qc_str <- if (is.matrix(pres_qc_raw)) apply(pres_qc_raw, 2, function(x) paste(x, collapse = "")) else paste(pres_qc_raw, collapse = "")
     pres_qc <- as.numeric(unlist(strsplit(pres_qc_str[1], "")))[1:length(pres)]
     
-    temp <- rep(NA, length(pres)); temp_qc <- rep(NA, length(pres))
-    sal  <- rep(NA, length(pres)); sal_qc  <- rep(NA, length(pres))
+    temp <- rep(NaN, length(pres)); temp_qc <- rep(NA, length(pres))
+    sal  <- rep(NaN, length(pres)); sal_qc  <- rep(NA, length(pres))
     
     if ("TEMP" %in% names(profile_physic$var)) {
       temp <- as.vector(ncvar_get(profile_physic, "TEMP"))
@@ -321,9 +310,9 @@ for (woko in float_ids) {
       sal_qc <- as.numeric(unlist(strsplit(sal_qc_str, "")))[1:length(pres)]
     }
     
-    nitrate <- rep(NA, length(pres)); nitrate_adj <- rep(NA, length(pres))
+    nitrate <- rep(NaN, length(pres)); nitrate_adj <- rep(NaN, length(pres))
     nitrate_qc <- rep(NA, length(pres)); nitrate_adj_qc <- rep(NA, length(pres))
-    ph      <- rep(NA, length(pres)); ph_adj      <- rep(NA, length(pres))
+    ph      <- rep(NaN, length(pres)); ph_adj      <- rep(NaN, length(pres))
     ph_qc   <- rep(NA, length(pres)); ph_adj_qc   <- rep(NA, length(pres))
     
     if ("NITRATE" %in% names(profile_bio$var)) {
@@ -358,8 +347,10 @@ for (woko in float_ids) {
       NITRATE = as.numeric(nitrate), NITRATE_QC = nitrate_qc,
       NITRATE_ADJUSTED = as.numeric(nitrate_adj), NITRATE_ADJUSTED_QC = nitrate_adj_qc,
       PH_IN_SITU_TOTAL = as.numeric(ph), PH_IN_SITU_TOTAL_QC = ph_qc,
-      PH_IN_SITU_TOTAL_ADJUSTED = as.numeric(ph_adj), PH_IN_SITU_TOTAL_ADJUSTED_QC = ph_adj_qc
+      PH_IN_SITU_TOTAL_ADJUSTED = as.numeric(ph_adj), PH_IN_SITU_TOTAL_ADJUSTED_QC = ph_adj_qc,
+      stringsAsFactors = FALSE
     ) %>%
+      convert_fill_to_nan() %>%
       filter(!is.na(PRES)) %>%
       arrange(PRES)
     
@@ -390,7 +381,8 @@ for (woko in float_ids) {
       DATE_TIME     = TIME,
       PRES_ADJUSTED = PRES
     ) %>%
-    left_join(calib_df, by = c("float_ids", "CYCLE_NUMBER"))
+    left_join(calib_df, by = c("float_ids", "CYCLE_NUMBER")) %>%
+    convert_fill_to_nan()
   
   delta_days <- as.numeric(difftime(df_all$DATE_TIME, df_all$launch_date, units = "days"))
   
@@ -399,60 +391,60 @@ for (woko in float_ids) {
       nitrate_gain_eff = coalesce(nitrate_gain, 1) * (1 + (coalesce(nitrate_drift, 0) / 100) * (delta_days / 365.25)),
       ph_gain_eff      = coalesce(ph_gain, 1) * (1 + (coalesce(ph_drift, 0) / 100) * (delta_days / 365.25)),
       
-      NITRATE_CALCULATED_ADJ = ifelse(!is.na(NITRATE), (NITRATE * nitrate_gain_eff) + coalesce(nitrate_offset, 0), NITRATE),
-      PH_CALCULATED_ADJ      = ifelse(!is.na(PH_IN_SITU_TOTAL), (PH_IN_SITU_TOTAL * ph_gain_eff) + coalesce(ph_offset, 0), PH_IN_SITU_TOTAL),
+      # Argo formula: ADJUSTED = (RAW * GAIN) + OFFSET
+      NITRATE_CALCULATED_ADJ = ifelse(!is.na(NITRATE), (NITRATE * nitrate_gain_eff) + coalesce(nitrate_offset, 0), NaN),
+      PH_CALCULATED_ADJ      = ifelse(!is.na(PH_IN_SITU_TOTAL), (PH_IN_SITU_TOTAL * ph_gain_eff) + coalesce(ph_offset, 0), NaN),
       
+      # Distinct A-mode parameter assignments:
+      # If raw NetCDF lacked an adjusted profile, populate it with calculated adjusted data so A-mode is complete across cycles
+      NITRATE_ADJUSTED = coalesce(NITRATE_ADJUSTED, NITRATE_CALCULATED_ADJ),
+      NITRATE_ADJUSTED_QC = coalesce(NITRATE_ADJUSTED_QC, NITRATE_QC, 1),
+      
+      PH_IN_SITU_TOTAL_ADJUSTED = coalesce(PH_IN_SITU_TOTAL_ADJUSTED, PH_CALCULATED_ADJ),
+      PH_IN_SITU_TOTAL_ADJUSTED_QC = coalesce(PH_IN_SITU_TOTAL_ADJUSTED_QC, PH_IN_SITU_TOTAL_QC, 2),
+      
+      # Distinct D-mode parameter assignments (Final scientific DMQC data)
       NITRATE_FINAL_RAW = coalesce(NITRATE_CALCULATED_ADJ, NITRATE_ADJUSTED, NITRATE),
       PH_FINAL_RAW      = coalesce(PH_CALCULATED_ADJ, PH_IN_SITU_TOTAL_ADJUSTED, PH_IN_SITU_TOTAL),
       
-      pres_missing_or_bad = is.na(PRES) | PRES == -99999 | PRES_QC %in% c("9", 9),
+      pres_missing_or_bad = is.na(PRES) | PRES_QC %in% c("9", 9),
       
-      NITRATE_FINAL = ifelse(pres_missing_or_bad | is.na(NITRATE_FINAL_RAW), -99999.0, NITRATE_FINAL_RAW),
-      PH_FINAL      = ifelse(pres_missing_or_bad | is.na(PH_FINAL_RAW), -99999.0, PH_FINAL_RAW)
+      NITRATE_FINAL = ifelse(pres_missing_or_bad, NaN, NITRATE_FINAL_RAW),
+      PH_FINAL      = ifelse(pres_missing_or_bad, NaN, PH_FINAL_RAW)
     )
   
-  # --- DIAGNOSTIC PRINT: CHECK DATA AVAILABILITY FOR ADJUSTED PARAMETERS ---
-  cat("\n==============================================================================\n")
-  cat(sprintf("  ADJUSTED PARAMETER AVAILABILITY SUMMARY FOR FLOAT: %s\n", active_wmo))
-  cat("==============================================================================\n")
-  
+  # Diagnostic Print
   adj_avail_summary <- df_all %>%
     summarise(
       Total_Rows = n(),
-      Raw_Nitrate_Count = sum(!is.na(NITRATE) & NITRATE != -99999.0),
-      Adjusted_Nitrate_Count = sum(!is.na(NITRATE_ADJUSTED) & NITRATE_ADJUSTED != -99999.0),
-      Calculated_Nitrate_Count = sum(!is.na(NITRATE_CALCULATED_ADJ) & NITRATE_CALCULATED_ADJ != -99999.0),
-      Raw_pH_Count = sum(!is.na(PH_IN_SITU_TOTAL) & PH_IN_SITU_TOTAL != -99999.0),
-      Adjusted_pH_Count = sum(!is.na(PH_IN_SITU_TOTAL_ADJUSTED) & PH_IN_SITU_TOTAL_ADJUSTED != -99999.0),
-      Calculated_pH_Count = sum(!is.na(PH_CALCULATED_ADJ) & PH_CALCULATED_ADJ != -99999.0)
+      Raw_Nitrate_Count = sum(!is.na(NITRATE)),
+      Adjusted_Nitrate_A_Mode_Count = sum(!is.na(NITRATE_ADJUSTED)),
+      Final_Nitrate_D_Mode_Count = sum(!is.na(NITRATE_FINAL)),
+      Raw_pH_Count = sum(!is.na(PH_IN_SITU_TOTAL)),
+      Adjusted_pH_A_Mode_Count = sum(!is.na(PH_IN_SITU_TOTAL_ADJUSTED)),
+      Final_pH_D_Mode_Count = sum(!is.na(PH_FINAL))
     )
-  
+  cat("\n==============================================================================\n")
+  cat(sprintf("  ADJUSTED PARAMETER AVAILABILITY SUMMARY FOR FLOAT: %s\n", active_wmo))
+  cat("==============================================================================\n")
   print(knitr::kable(adj_avail_summary, format = "simple"))
-  
-  if (adj_avail_summary$Adjusted_Nitrate_Count == 0) {
-    cat("  --> NOTE: NITRATE_ADJUSTED is entirely NA/missing in GDAC NetCDF files for this float.\n")
-    cat("            (A-mode lines will be omitted from per-cycle profile and section plots).\n")
-  }
-  if (adj_avail_summary$Adjusted_pH_Count == 0) {
-    cat("  --> NOTE: PH_IN_SITU_TOTAL_ADJUSTED is entirely NA/missing in GDAC NetCDF files for this float.\n")
-    cat("            (A-mode lines will be omitted from per-cycle profile and section plots).\n")
-  }
   cat("==============================================================================\n\n")
   
-  # --- STEP 2.5: BGC-ARGO COOKBOOK COMPLIANT QC FLAG EVALUATION ---
+  # --- STEP 2.5: BGC-ARGO COOKBOOK COMPLIANT QC & ERROR EVALUATION ---
   df_all <- df_all %>%
     group_by(CYCLE_NUMBER) %>%
     group_modify(~ {
       df_cyc <- .x
       n_obs  <- nrow(df_cyc)
       
-      # 1. NITRATE QC EVALUATION
+      # 1. Nitrate QC
       nit_v <- df_cyc$NITRATE_FINAL
-      qc_nitrate <- rep(1, n_obs)
+      is_nit_adjusted <- any(!is.na(df_cyc$NITRATE_CALCULATED_ADJ) | !is.na(df_cyc$NITRATE_ADJUSTED))
+      qc_nitrate <- rep(ifelse(is_nit_adjusted, 1, 3), n_obs)
       
-      qc_nitrate[!is.na(nit_v) & nit_v != -99999.0 & (nit_v < -0.5 | nit_v > 60.0)] <- 4
+      qc_nitrate[!is.na(nit_v) & (nit_v < -0.5 | nit_v > 60.0)] <- 4
       
-      valid_nit_idx <- which(!is.na(nit_v) & nit_v != -99999.0)
+      valid_nit_idx <- which(!is.na(nit_v))
       if (length(valid_nit_idx) >= 2) {
         max_idx <- valid_nit_idx[which.max(df_cyc$PRES[valid_nit_idx])]
         sec_idx <- valid_nit_idx[order(df_cyc$PRES[valid_nit_idx], decreasing = TRUE)[2]]
@@ -462,20 +454,20 @@ for (woko in float_ids) {
       }
       
       if ("TEMP_QC" %in% names(df_cyc)) qc_nitrate[df_cyc$TEMP_QC %in% c("4", 4)] <- 4
+      if ("PSAL_QC" %in% names(df_cyc)) qc_nitrate[df_cyc$PSAL_QC %in% c("4", 4)] <- 4
       qc_nitrate[df_cyc$PRES_QC %in% c("4", 4)] <- 4
-      qc_nitrate[nit_v == -99999.0 | is.na(nit_v)] <- 9
+      qc_nitrate[is.na(nit_v)] <- 9
       qc_nitrate[df_cyc$PRES_QC %in% c("9", 9)] <- 9
-      
       df_cyc$NITRATE_FINAL_QC <- qc_nitrate
       
-      # 2. pH QC EVALUATION
+      # 2. pH QC
       ph_v <- df_cyc$PH_FINAL
       is_ph_adjusted <- any(!is.na(df_cyc$PH_CALCULATED_ADJ) | !is.na(df_cyc$PH_IN_SITU_TOTAL_ADJUSTED))
-      qc_ph <- rep(ifelse(is_ph_adjusted, 1, 3), n_obs)
+      qc_ph <- rep(ifelse(is_ph_adjusted, 2, 3), n_obs)
       
-      qc_ph[!is.na(ph_v) & ph_v != -99999.0 & (ph_v < 7.0 | ph_v > 8.8)] <- 4
+      qc_ph[!is.na(ph_v) & (ph_v < 7.0 | ph_v > 8.8)] <- 4
       
-      valid_ph_idx <- which(!is.na(ph_v) & ph_v != -99999.0)
+      valid_ph_idx <- which(!is.na(ph_v))
       if (length(valid_ph_idx) >= 2) {
         max_idx <- valid_ph_idx[which.max(df_cyc$PRES[valid_ph_idx])]
         sec_idx <- valid_ph_idx[order(df_cyc$PRES[valid_ph_idx], decreasing = TRUE)[2]]
@@ -490,39 +482,35 @@ for (woko in float_ids) {
         psal_bad_idx <- df_cyc$PSAL_QC %in% c("4", 4)
         qc_ph[psal_bad_idx & qc_ph != 4] <- 3
       }
-      
-      qc_ph[ph_v == -99999.0 | is.na(ph_v)] <- 9
+      qc_ph[is.na(ph_v)] <- 9
       qc_ph[df_cyc$PRES_QC %in% c("9", 9)] <- 9
-      
       df_cyc$PH_FINAL_QC <- qc_ph
+      
       return(df_cyc)
     }) %>%
     ungroup() %>%
     mutate(
-      NITRATE_ADJUSTED_ERROR          = ifelse(NITRATE_FINAL_QC != 9, 0.50, -99999.0),
-      PH_IN_SITU_TOTAL_ADJUSTED_ERROR = ifelse(PH_FINAL_QC != 9, 0.007, -99999.0)
+      NITRATE_ADJUSTED_ERROR          = ifelse(NITRATE_FINAL_QC %in% c(1, 2, 3), 1.00, NaN),
+      PH_IN_SITU_TOTAL_ADJUSTED_ERROR = ifelse(PH_FINAL_QC %in% c(1, 2, 3), 0.007, NaN)
     ) %>%
     select(-c(NITRATE_FINAL_RAW, PH_FINAL_RAW, pres_missing_or_bad))
   
-  # --- DIAGNOSTIC PRINT: QC FLAG BREAKDOWN ---
-  cat("\n------------------------------------------------------------------------------\n")
-  cat(sprintf("  QC FLAG BREAKDOWN SUMMARY FOR FLOAT: %s\n", active_wmo))
-  cat("------------------------------------------------------------------------------\n")
+  # Bottle samples
+  df_nit_bottle_master <- Bottle_Vali %>%
+    filter(Float_num == float_id & !is.na(NITRATE_Vali) & !is.na(PRES)) %>%
+    select(PRES, Nitrate = NITRATE_Vali) %>%
+    mutate(Mode = factor("Bottle", levels = mode_levels))
   
-  nit_qc_df <- as.data.frame(table(QC_Flag = df_all$NITRATE_FINAL_QC), responseName = "Nitrate_Count")
-  ph_qc_df  <- as.data.frame(table(QC_Flag = df_all$PH_FINAL_QC), responseName = "pH_Count")
+  df_ph_bottle_master <- Bottle_Vali %>%
+    filter(Float_num == float_id & !is.na(PH_Vali) & !is.na(PRES)) %>%
+    select(PRES, pH = PH_Vali) %>%
+    mutate(Mode = factor("Bottle", levels = mode_levels))
   
-  qc_summary_table <- full_join(nit_qc_df, ph_qc_df, by = "QC_Flag") %>%
-    mutate(
-      Nitrate_Count = coalesce(Nitrate_Count, 0L),
-      pH_Count      = coalesce(pH_Count, 0L)
-    ) %>%
-    arrange(suppressWarnings(as.numeric(as.character(QC_Flag))))
-  
-  print(knitr::kable(qc_summary_table, format = "simple"))
-  cat("------------------------------------------------------------------------------\n\n")
-  
-  # --- STEP 3: RENDER PER-CYCLE PLOTS (WITH BOTTLE VALIDATION OVERLAYS) ---
+  # ==============================================================================
+  # STEP 3: RENDER PER-CYCLE PLOTS (R-mode, A-mode, D-mode & Bottle)
+  # - A-mode explicitly plots NITRATE_ADJUSTED and PH_IN_SITU_TOTAL_ADJUSTED
+  # - D-mode explicitly plots NITRATE_FINAL and PH_FINAL
+  # ==============================================================================
   all_cycles <- sort(unique(df_all$CYCLE_NUMBER[!is.na(df_all$CYCLE_NUMBER)]))
   message(sprintf("Rendering profile plots for WMO %s across %d cycles...", active_wmo, length(all_cycles)))
   
@@ -534,161 +522,171 @@ for (woko in float_ids) {
     cyc_lon      <- df_sub$LONGITUDE[1]
     cyc_date_str <- format(df_sub$DATE_TIME[1], "%Y-%m-%d")
     
-    df_bottle_sub <- Bottle_Vali %>% 
-      filter(Float_num == float_id & CYCLE_NUMBER == cyc)
+    # --- 1. NITRATE PROFILE ---
+    df_nit_cycle_clean <- df_sub %>%
+      select(PRES, NITRATE, NITRATE_ADJUSTED, NITRATE_FINAL) %>%
+      pivot_longer(
+        cols      = c("NITRATE", "NITRATE_ADJUSTED", "NITRATE_FINAL"),
+        names_to  = "Mode_Raw",
+        values_to = "Nitrate"
+      ) %>%
+      mutate(
+        Mode_Name = case_when(
+          Mode_Raw == "NITRATE"          ~ "R-mode",
+          Mode_Raw == "NITRATE_ADJUSTED" ~ "A-mode",
+          Mode_Raw == "NITRATE_FINAL"    ~ "D-mode"
+        ),
+        Mode = factor(Mode_Name, levels = mode_levels)
+      ) %>%
+      filter(!is.na(Nitrate) & !is.na(PRES))
     
-    # 1. NITRATE PROFILE PLOT
-    if (any(df_sub$NITRATE_FINAL != -99999.0 & !is.na(df_sub$NITRATE_FINAL))) {
-      df_nit_clean <- df_sub %>%
-        pivot_longer(
-          cols = any_of(c("NITRATE", "NITRATE_ADJUSTED", "NITRATE_FINAL")), 
-          names_to = "Mode_Raw", 
-          values_to = "Nitrate"
-        ) %>%
-        mutate(
-          Mode = factor(
-            case_when(
-              Mode_Raw == "NITRATE" ~ "R-mode", 
-              Mode_Raw == "NITRATE_ADJUSTED" ~ "A-mode", 
-              Mode_Raw == "NITRATE_FINAL" ~ "D-mode"
-            ), 
-            levels = mode_levels
-          )
-        ) %>%
-        filter(!is.na(Nitrate) & Nitrate != -99999.0 & !is.na(PRES) & PRES != -99999.0)
+    has_nit_bottle <- (cyc == 1) && (nrow(df_nit_bottle_master) > 0)
+    df_nit_combined <- if (has_nit_bottle) bind_rows(df_nit_cycle_clean, df_nit_bottle_master) else df_nit_cycle_clean
+    
+    # Layer order: D-mode plotted first, A-mode plotted on top, R-mode, Bottle last
+    # Ensures A-mode dashed line is fully visible even if D-mode has identical values
+    df_nit_combined <- df_nit_combined %>% 
+      arrange(factor(Mode, levels = c("D-mode", "A-mode", "R-mode", "Bottle")), PRES)
+    
+    if (nrow(df_nit_combined) > 0) {
+      p_nit_cycle <- ggplot() +
+        geom_path(
+          data = filter(df_nit_combined, Mode != "Bottle"),
+          aes(x = Nitrate, y = PRES, color = Mode, linetype = Mode, linewidth = Mode),
+          alpha = 0.95
+        ) +
+        geom_point(
+          data = filter(df_nit_combined, Mode == "Bottle"),
+          aes(x = Nitrate, y = PRES, color = Mode, shape = Mode),
+          size = 2.5, alpha = 0.95
+        ) +
+        scale_color_manual(values = color_mapping, limits = mode_levels, drop = FALSE) +
+        scale_linetype_manual(values = linetype_mapping, limits = mode_levels, drop = FALSE) +
+        scale_linewidth_manual(values = linewidth_map, limits = mode_levels, drop = FALSE) +
+        scale_shape_manual(values = shape_mapping, limits = mode_levels, drop = FALSE) +
+        scale_y_reverse(limits = c(max(c(df_nit_combined$PRES, 2000), na.rm = TRUE), 0)) +
+        scale_x_continuous(position = "top") +
+        labs(
+          title    = paste0("Float ", float_id, " Cycle ", cyc, " Nitrate Profiles (R-mode, A-mode, D-mode)"),
+          subtitle = paste0("Lat: ", round(cyc_lat, 2), "°, Lon: ", round(cyc_lon, 2), "° | Cycle Date: ", cyc_date_str),
+          caption  = paste0("Plot generated on: ", today_str),
+          x        = expression(Nitrate ~ (mu * "mol/kg")),
+          y        = "Pressure (dbar)",
+          color    = "Data Source"
+        ) +
+        theme_bw(base_size = 13) +
+        theme(
+          aspect.ratio      = 1,
+          legend.position   = "right",
+          legend.title      = element_text(face = "bold", size = 11),
+          legend.text       = element_text(size = 10),
+          legend.key.width  = unit(1.4, "cm"),
+          legend.key.height = unit(0.5, "cm")
+        ) +
+        guides(
+          color = guide_legend(
+            override.aes = list(
+              shape     = shape_mapping[mode_levels],
+              linetype  = linetype_mapping[mode_levels],
+              linewidth = linewidth_map[mode_levels],
+              size      = ifelse(mode_levels == "Bottle", 2.5, NA)
+            )
+          ),
+          linetype  = "none",
+          shape     = "none",
+          linewidth = "none"
+        )
       
-      df_nit_bottle <- df_bottle_sub %>% 
-        filter(!is.na(NITRATE_Vali) & !is.na(PRES)) %>%
-        select(PRES, Nitrate = NITRATE_Vali) %>%
-        mutate(Mode = factor("Bottle", levels = mode_levels))
-      
-      # Order rows so R-mode is rendered before D-mode to prevent total visual overlap
-      df_nit_combined <- bind_rows(df_nit_clean, df_nit_bottle) %>% 
-        arrange(factor(Mode, levels = c("R-mode", "A-mode", "D-mode", "Bottle")), PRES)
-      
-      if (nrow(df_nit_clean) > 0) {
-        p_nit <- ggplot() +
-          geom_path(
-            data = filter(df_nit_combined, Mode != "Bottle"),
-            aes(x = Nitrate, y = PRES, color = Mode, linetype = Mode),
-            linewidth = 0.8, alpha = 0.85
-          ) +
-          geom_point(
-            data = filter(df_nit_combined, Mode == "Bottle"),
-            aes(x = Nitrate, y = PRES, color = Mode, shape = Mode),
-            size = 2.5, alpha = 0.95
-          ) +
-          scale_color_manual(values = color_mapping, drop = FALSE) +
-          scale_linetype_manual(
-            values = c("R-mode" = "dashed", "A-mode" = "dotdash", "D-mode" = "solid", "Bottle" = "blank"), 
-            drop = FALSE
-          ) +
-          scale_shape_manual(values = shape_mapping, drop = FALSE) +
-          scale_y_reverse(limits = c(max(c(df_nit_combined$PRES, 2000), na.rm = TRUE), 0)) +
-          scale_x_continuous(position = "top") +
-          labs(
-            title = paste0("Float ", float_id, " Cycle ", cyc, " Nitrate Profile"),
-            subtitle = paste0("Lat: ", round(cyc_lat, 2), "°, Lon: ", round(cyc_lon, 2), "° | Date: ", cyc_date_str),
-            x = expression(Nitrate ~ (mu * "mol/kg")), 
-            y = "Pressure (dbar)",
-            color = "Data Source"
-          ) + 
-          theme_bw() +
-          theme(legend.position = "right") +
-          guides(
-            color = guide_legend(override.aes = list(
-              shape = shape_mapping, 
-              linetype = c("dashed", "dotdash", "solid", "blank"), 
-              linewidth = c(0.8, 0.8, 0.8, 0), 
-              size = c(NA, NA, NA, 2.5)
-            )),
-            linetype = "none",
-            shape = "none"
-          )
-        
-        nit_file_path <- file.path(dir_nitrate_plots, sprintf("Float_%d_Cycle_%03d_Nitrate_Profile.png", float_id, cyc))
-        ggsave(nit_file_path, plot = p_nit, width = 9, height = 7, dpi = 150)
-      }
+      nit_file_path <- file.path(dir_nitrate_plots, sprintf("Float_%d_Cycle_%03d_Nitrate_Profile.png", float_id, cyc))
+      ggsave(nit_file_path, plot = p_nit_cycle, width = 9.5, height = 7, dpi = 300)
     }
     
-    # 2. pH PROFILE PLOT
-    if (any(df_sub$PH_FINAL != -99999.0 & !is.na(df_sub$PH_FINAL))) {
-      df_ph_clean <- df_sub %>%
-        pivot_longer(
-          cols = any_of(c("PH_IN_SITU_TOTAL", "PH_IN_SITU_TOTAL_ADJUSTED", "PH_FINAL")), 
-          names_to = "Mode_Raw", 
-          values_to = "pH"
-        ) %>%
-        mutate(
-          Mode = factor(
-            case_when(
-              Mode_Raw == "PH_IN_SITU_TOTAL" ~ "R-mode", 
-              Mode_Raw == "PH_IN_SITU_TOTAL_ADJUSTED" ~ "A-mode", 
-              Mode_Raw == "PH_FINAL" ~ "D-mode"
-            ), 
-            levels = mode_levels
-          )
-        ) %>%
-        filter(!is.na(pH) & pH != -99999.0 & !is.na(PRES) & PRES != -99999.0)
+    # --- 2. pH PROFILE ---
+    df_ph_cycle_clean <- df_sub %>%
+      select(PRES, PH_IN_SITU_TOTAL, PH_IN_SITU_TOTAL_ADJUSTED, PH_FINAL) %>%
+      pivot_longer(
+        cols      = c("PH_IN_SITU_TOTAL", "PH_IN_SITU_TOTAL_ADJUSTED", "PH_FINAL"),
+        names_to  = "Mode_Raw",
+        values_to = "pH"
+      ) %>%
+      mutate(
+        Mode_Name = case_when(
+          Mode_Raw == "PH_IN_SITU_TOTAL"          ~ "R-mode",
+          Mode_Raw == "PH_IN_SITU_TOTAL_ADJUSTED" ~ "A-mode",
+          Mode_Raw == "PH_FINAL"                  ~ "D-mode"
+        ),
+        Mode = factor(Mode_Name, levels = mode_levels)
+      ) %>%
+      filter(!is.na(pH) & !is.na(PRES))
+    
+    has_ph_bottle <- (cyc == 1) && (nrow(df_ph_bottle_master) > 0)
+    df_ph_combined <- if (has_ph_bottle) bind_rows(df_ph_cycle_clean, df_ph_bottle_master) else df_ph_cycle_clean
+    
+    # Layer order: D-mode plotted first, A-mode plotted on top, R-mode, Bottle last
+    df_ph_combined <- df_ph_combined %>% 
+      arrange(factor(Mode, levels = c("D-mode", "A-mode", "R-mode", "Bottle")), PRES)
+    
+    if (nrow(df_ph_combined) > 0) {
+      p_ph_cycle <- ggplot() +
+        geom_path(
+          data = filter(df_ph_combined, Mode != "Bottle"),
+          aes(x = pH, y = PRES, color = Mode, linetype = Mode, linewidth = Mode),
+          alpha = 0.95
+        ) +
+        geom_point(
+          data = filter(df_ph_combined, Mode == "Bottle"),
+          aes(x = pH, y = PRES, color = Mode, shape = Mode),
+          size = 2.5, alpha = 0.95
+        ) +
+        scale_color_manual(values = color_mapping, limits = mode_levels, drop = FALSE) +
+        scale_linetype_manual(values = linetype_mapping, limits = mode_levels, drop = FALSE) +
+        scale_linewidth_manual(values = linewidth_map, limits = mode_levels, drop = FALSE) +
+        scale_shape_manual(values = shape_mapping, limits = mode_levels, drop = FALSE) +
+        scale_y_reverse(limits = c(max(c(df_ph_combined$PRES, 2000), na.rm = TRUE), 0)) +
+        scale_x_continuous(position = "top") +
+        labs(
+          title    = paste0("Float ", float_id, " Cycle ", cyc, " pH Profiles (R-mode, A-mode, D-mode)"),
+          subtitle = paste0("Lat: ", round(cyc_lat, 2), "°, Lon: ", round(cyc_lon, 2), "° | Cycle Date: ", cyc_date_str),
+          caption  = paste0("Plot generated on: ", today_str),
+          x        = "pH (In-Situ Total Scale)",
+          y        = "Pressure (dbar)",
+          color    = "Data Source"
+        ) +
+        theme_bw(base_size = 13) +
+        theme(
+          aspect.ratio      = 1,
+          legend.position   = "right",
+          legend.title      = element_text(face = "bold", size = 11),
+          legend.text       = element_text(size = 10),
+          legend.key.width  = unit(1.4, "cm"),
+          legend.key.height = unit(0.5, "cm")
+        ) +
+        guides(
+          color = guide_legend(
+            override.aes = list(
+              shape     = shape_mapping[mode_levels],
+              linetype  = linetype_mapping[mode_levels],
+              linewidth = linewidth_map[mode_levels],
+              size      = ifelse(mode_levels == "Bottle", 2.5, NA)
+            )
+          ),
+          linetype  = "none",
+          shape     = "none",
+          linewidth = "none"
+        )
       
-      df_ph_bottle <- df_bottle_sub %>% 
-        filter(!is.na(PH_Vali) & !is.na(PRES)) %>%
-        select(PRES, pH = PH_Vali) %>%
-        mutate(Mode = factor("Bottle", levels = mode_levels))
-      
-      # Order rows so R-mode is rendered before D-mode to prevent total visual overlap
-      df_ph_combined <- bind_rows(df_ph_clean, df_ph_bottle) %>% 
-        arrange(factor(Mode, levels = c("R-mode", "A-mode", "D-mode", "Bottle")), PRES)
-      
-      if (nrow(df_ph_clean) > 0) {
-        p_ph <- ggplot() +
-          geom_path(
-            data = filter(df_ph_combined, Mode != "Bottle"),
-            aes(x = pH, y = PRES, color = Mode, linetype = Mode),
-            linewidth = 0.8, alpha = 0.85
-          ) +
-          geom_point(
-            data = filter(df_ph_combined, Mode == "Bottle"),
-            aes(x = pH, y = PRES, color = Mode, shape = Mode),
-            size = 2.5, alpha = 0.95
-          ) +
-          scale_color_manual(values = color_mapping, drop = FALSE) +
-          scale_linetype_manual(
-            values = c("R-mode" = "dashed", "A-mode" = "dotdash", "D-mode" = "solid", "Bottle" = "blank"), 
-            drop = FALSE
-          ) +
-          scale_shape_manual(values = shape_mapping, drop = FALSE) +
-          scale_y_reverse(limits = c(max(c(df_ph_combined$PRES, 2000), na.rm = TRUE), 0)) +
-          scale_x_continuous(position = "top") +
-          labs(
-            title = paste0("Float ", float_id, " Cycle ", cyc, " pH Profile"),
-            subtitle = paste0("Lat: ", round(cyc_lat, 2), "°, Lon: ", round(cyc_lon, 2), "° | Date: ", cyc_date_str),
-            x = "pH (In-Situ)", 
-            y = "Pressure (dbar)",
-            color = "Data Source"
-          ) + 
-          theme_bw() +
-          theme(legend.position = "right") +
-          guides(
-            color = guide_legend(override.aes = list(
-              shape = shape_mapping, 
-              linetype = c("dashed", "dotdash", "solid", "blank"), 
-              linewidth = c(0.8, 0.8, 0.8, 0), 
-              size = c(NA, NA, NA, 2.5)
-            )),
-            linetype = "none",
-            shape = "none"
-          )
-        
-        ph_file_path <- file.path(dir_ph_plots, sprintf("Float_%d_Cycle_%03d_pH_Profile.png", float_id, cyc))
-        ggsave(ph_file_path, plot = p_ph, width = 9, height = 7, dpi = 150)
-      }
+      ph_file_path <- file.path(dir_ph_plots, sprintf("Float_%d_Cycle_%03d_pH_Profile.png", float_id, cyc))
+      ggsave(ph_file_path, plot = p_ph_cycle, width = 9.5, height = 7, dpi = 300)
     }
   }
   
-  # --- STEP 3.5: INTERPOLATED CONTOUR SECTION & QC SUMMARY PLOTS (RAW, ADJUSTED, FINAL) ---
+  # ==============================================================================
+  # STEP 4: SECTION CONTOUR & QC SUMMARY PLOTS (ALL CYCLES)
+  # - A-mode plots NITRATE_ADJUSTED and PH_IN_SITU_TOTAL_ADJUSTED
+  # - D-mode plots NITRATE_FINAL and PH_FINAL
+  # ==============================================================================
   df_summary_base <- df_all %>% 
-    filter(!is.na(PRES) & PRES != -99999.0) %>%
+    filter(!is.na(PRES)) %>%
     mutate(
       CYCLE_NUMBER = as.numeric(CYCLE_NUMBER),
       PRES         = as.numeric(PRES)
@@ -696,360 +694,100 @@ for (woko in float_ids) {
   
   create_interpolated_grid <- function(df, val_col, grid_nx = 100, grid_ny = 100) {
     clean_df <- df %>% 
-      filter(!is.na(!!sym(val_col)) & !!sym(val_col) != -99999.0) %>%
+      filter(!is.na(!!sym(val_col))) %>% 
       select(x = CYCLE_NUMBER, y = PRES, z = !!sym(val_col)) %>%
       group_by(x, y) %>%
       summarise(z = mean(z, na.rm = TRUE), .groups = "drop")
     
-    # 1. Require at least 5 observations spread across multiple cycles and depths
-    if (nrow(clean_df) < 5 || length(unique(clean_df$x)) < 2 || length(unique(clean_df$y)) < 2) {
-      return(NULL)
-    }
+    if (nrow(clean_df) < 5 || length(unique(clean_df$x)) < 2 || length(unique(clean_df$y)) < 2) return(NULL)
+    if (diff(range(clean_df$z, na.rm = TRUE)) == 0) return(NULL)
     
-    if (diff(range(clean_df$z, na.rm = TRUE)) == 0) {
-      return(NULL)
-    }
-    
-    # 2. Attempt interpolation with safe error handling
     interp_res <- suppressWarnings(tryCatch({
       interp::interp(
-        x = clean_df$x, 
-        y = clean_df$y, 
-        z = clean_df$z,
+        x = clean_df$x, y = clean_df$y, z = clean_df$z,
         xo = seq(min(clean_df$x), max(clean_df$x), length.out = grid_nx),
         yo = seq(min(clean_df$y), max(clean_df$y), length.out = grid_ny),
-        linear = TRUE,
-        extrap = FALSE,
-        duplicate = "mean"
+        linear = TRUE, extrap = FALSE, duplicate = "mean"
       )
     }, error = function(e) return(NULL)))
     
-    # 3. Guard against NULL outputs or non-matrix list elements
-    if (is.null(interp_res) || is.null(interp_res$z) || !is.matrix(interp_res$z)) {
-      return(NULL)
-    }
-    
-    # 4. Strict Matrix Dimension & Vector Length Verification
-    if (nrow(interp_res$z) != grid_nx || ncol(interp_res$z) != grid_ny) {
-      return(NULL)
-    }
+    if (is.null(interp_res) || is.null(interp_res$z) || !is.matrix(interp_res$z)) return(NULL)
+    if (nrow(interp_res$z) != grid_nx || ncol(interp_res$z) != grid_ny) return(NULL)
     
     z_vector <- as.vector(interp_res$z)
     grid_df  <- expand.grid(x = interp_res$x, y = interp_res$y)
-    
-    # Ensure vector length precisely equals the row count of grid_df (10,000)
-    if (length(z_vector) != nrow(grid_df) || all(is.na(z_vector))) {
-      return(NULL)
-    }
+    if (length(z_vector) != nrow(grid_df) || all(is.na(z_vector))) return(NULL)
     
     grid_df$z <- z_vector
-    
     return(grid_df %>% filter(!is.na(z)))
   }
   
-  # -------------------------------------------------------------------------
-  # 1. NITRATE SUMMARY SECTION PLOTS
-  # -------------------------------------------------------------------------
-  
-  # 1A. NITRATE RAW (R-MODE) INTERPOLATED SECTION & QC SUMMARY PLOT
-  if ("NITRATE" %in% names(df_summary_base) && any(!is.na(df_summary_base$NITRATE) & df_summary_base$NITRATE != -99999.0)) {
-    nit_raw_grid <- create_interpolated_grid(df_summary_base, "NITRATE")
+  generate_section_qc_plot <- function(df_base, var_name, qc_var_name, title_prefix, file_suffix, 
+                                       col_palette = "viridis", unit_expr = "") {
+    if (!var_name %in% names(df_base) || !any(!is.na(df_base[[var_name]]))) return(NULL)
+    grid_df <- create_interpolated_grid(df_base, var_name)
     
-    df_nit_raw_qc <- df_summary_base %>% 
-      filter(!is.na(NITRATE) & NITRATE != -99999.0) %>% 
-      mutate(NITRATE_QC = as.character(coalesce(as.character(NITRATE_QC), "1")))
+    df_qc <- df_base %>% filter(!is.na(!!sym(var_name)))
+    if (qc_var_name %in% names(df_qc)) {
+      df_qc$QC_VAL <- as.character(coalesce(as.character(df_qc[[qc_var_name]]), "1"))
+    } else {
+      df_qc$QC_VAL <- "1"
+    }
     
-    if (!is.null(nit_raw_grid)) {
-      p_nit_raw_sec_data <- ggplot() +
-        geom_contour_filled(data = nit_raw_grid, aes(x = x, y = y, z = z), bins = 15) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_d(option = "viridis", name = expression(Nitrate ~ (mu * "mol/kg"))) +
+    if (!is.null(grid_df)) {
+      p_data <- ggplot() +
+        geom_contour_filled(data = grid_df, aes(x = x, y = y, z = z), bins = 15) +
+        scale_y_reverse(limits = c(max(df_base$PRES, na.rm = TRUE), 0)) +
+        scale_fill_viridis_d(option = col_palette, name = unit_expr) +
         labs(
-          title = paste0("Float ", float_id, " - Interpolated NITRATE RAW (R-mode) Section Profile"),
+          title = paste0("Float ", float_id, " - Interpolated ", title_prefix, " Section Profile"),
           x     = "Cycle Number",
           y     = "Pressure (dbar)"
         ) +
         theme_bw(base_size = 12) + theme(legend.position = "right")
     } else {
-      p_nit_raw_sec_data <- ggplot(df_nit_raw_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
-        geom_tile(aes(fill = NITRATE), width = 1.2, height = 10) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_c(option = "viridis", name = expression(Nitrate ~ (mu * "mol/kg"))) +
+      p_data <- ggplot(df_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
+        geom_tile(aes(fill = !!sym(var_name)), width = 1.2, height = 10) +
+        scale_y_reverse(limits = c(max(df_base$PRES, na.rm = TRUE), 0)) +
+        scale_fill_viridis_c(option = col_palette, name = unit_expr) +
         labs(
-          title = paste0("Float ", float_id, " - NITRATE RAW (R-mode) Section Profile"),
+          title = paste0("Float ", float_id, " - ", title_prefix, " Section Profile"),
           x     = "Cycle Number",
           y     = "Pressure (dbar)"
         ) +
         theme_bw(base_size = 12) + theme(legend.position = "right")
     }
     
-    p_nit_raw_sec_qc <- ggplot(df_nit_raw_qc, aes(x = CYCLE_NUMBER, y = PRES, color = NITRATE_QC)) +
+    p_qc <- ggplot(df_qc, aes(x = CYCLE_NUMBER, y = PRES, color = QC_VAL)) +
       geom_point(alpha = 0.7, size = 1.2) +
-      scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
+      scale_y_reverse(limits = c(max(df_base$PRES, na.rm = TRUE), 0)) +
       scale_color_manual(values = qc_color_scale, drop = FALSE, name = "QC Flag") +
-      labs(title = "NITRATE RAW (R-mode) QC Flags Section Map", x = "Cycle Number", y = "Pressure (dbar)") +
+      labs(title = paste0(title_prefix, " QC Flags Section Map"), x = "Cycle Number", y = "Pressure (dbar)") +
       theme_bw(base_size = 12) + theme(legend.position = "right")
     
-    p_nit_raw_combined <- (p_nit_raw_sec_data / p_nit_raw_sec_qc) +
+    p_combined <- (p_data / p_qc) +
       plot_annotation(
-        title    = paste0("BGC-Argo Float ", float_id, " - NITRATE RAW (R-mode) Section DMQC Summary"),
+        title    = paste0("BGC-Argo Float ", float_id, " - ", title_prefix, " Section DMQC Summary"),
         subtitle = paste0("Generated on: ", today_str),
         theme    = theme(plot.title = element_text(face = "bold", size = 14))
       )
     
-    ggsave(file.path(dir_qc_summary, sprintf("Float_%d_NITRATE_RAW_Section_Summary.png", float_id)), plot = p_nit_raw_combined, width = 12, height = 8, dpi = 150)
+    ggsave(
+      file.path(dir_qc_summary, sprintf("Float_%d_%s_Section_Summary.png", float_id, file_suffix)), 
+      plot = p_combined, width = 12, height = 8, dpi = 150
+    )
   }
   
-  # 1B. NITRATE ADJUSTED (A-MODE) INTERPOLATED SECTION & QC SUMMARY PLOT
-  if ("NITRATE_ADJUSTED" %in% names(df_summary_base) && any(!is.na(df_summary_base$NITRATE_ADJUSTED) & df_summary_base$NITRATE_ADJUSTED != -99999.0)) {
-    nit_adj_grid <- create_interpolated_grid(df_summary_base, "NITRATE_ADJUSTED")
-    
-    df_nit_adj_qc <- df_summary_base %>% 
-      filter(!is.na(NITRATE_ADJUSTED) & NITRATE_ADJUSTED != -99999.0) %>% 
-      mutate(NITRATE_ADJUSTED_QC = as.character(coalesce(as.character(NITRATE_ADJUSTED_QC), "1")))
-    
-    if (!is.null(nit_adj_grid)) {
-      p_nit_adj_sec_data <- ggplot() +
-        geom_contour_filled(data = nit_adj_grid, aes(x = x, y = y, z = z), bins = 15) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_d(option = "viridis", name = expression(Nitrate ~ (mu * "mol/kg"))) +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated NITRATE_ADJUSTED (A-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    } else {
-      p_nit_adj_sec_data <- ggplot(df_nit_adj_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
-        geom_tile(aes(fill = NITRATE_ADJUSTED), width = 1.2, height = 10) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_c(option = "viridis", name = expression(Nitrate ~ (mu * "mol/kg"))) +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated NITRATE_ADJUSTED (A-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    }
-    
-    p_nit_adj_sec_qc <- ggplot(df_nit_adj_qc, aes(x = CYCLE_NUMBER, y = PRES, color = NITRATE_ADJUSTED_QC)) +
-      geom_point(alpha = 0.7, size = 1.2) +
-      scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-      scale_color_manual(values = qc_color_scale, drop = FALSE, name = "QC Flag") +
-      labs(title = "NITRATE_ADJUSTED (A-mode) QC Flags Section Map", x = "Cycle Number", y = "Pressure (dbar)") +
-      theme_bw(base_size = 12) + theme(legend.position = "right")
-    
-    p_nit_adj_combined <- (p_nit_adj_sec_data / p_nit_adj_sec_qc) +
-      plot_annotation(
-        title    = paste0("BGC-Argo Float ", float_id, " - NITRATE_ADJUSTED (A-mode) Section DMQC Summary"),
-        subtitle = paste0("Generated on: ", today_str),
-        theme    = theme(plot.title = element_text(face = "bold", size = 14))
-      )
-    
-    ggsave(file.path(dir_qc_summary, sprintf("Float_%d_NITRATE_ADJUSTED_Section_Summary.png", float_id)), plot = p_nit_adj_combined, width = 12, height = 8, dpi = 150)
-  }
+  # Produce Section Plots for Nitrate & pH (R-mode, A-mode, D-mode)
+  generate_section_qc_plot(df_summary_base, "NITRATE", "NITRATE_QC", "NITRATE RAW (R-mode)", "NITRATE_RAW", col_palette = "viridis", unit_expr = expression(Nitrate ~ (mu * "mol/kg")))
+  generate_section_qc_plot(df_summary_base, "NITRATE_ADJUSTED", "NITRATE_ADJUSTED_QC", "NITRATE_ADJUSTED (A-mode)", "NITRATE_ADJUSTED", col_palette = "viridis", unit_expr = expression(Nitrate ~ (mu * "mol/kg")))
+  generate_section_qc_plot(df_summary_base, "NITRATE_FINAL", "NITRATE_FINAL_QC", "NITRATE_FINAL (D-mode)", "NITRATE_FINAL", col_palette = "viridis", unit_expr = expression(Nitrate ~ (mu * "mol/kg")))
   
-  # 1C. NITRATE FINAL (D-MODE) INTERPOLATED SECTION & QC SUMMARY PLOT
-  if ("NITRATE_FINAL" %in% names(df_summary_base) && any(df_summary_base$NITRATE_FINAL != -99999.0)) {
-    nit_grid <- create_interpolated_grid(df_summary_base, "NITRATE_FINAL")
-    
-    df_nit_qc <- df_summary_base %>% 
-      filter(NITRATE_FINAL != -99999.0) %>% 
-      mutate(NITRATE_FINAL_QC = as.character(NITRATE_FINAL_QC))
-    
-    if (!is.null(nit_grid)) {
-      p_nit_sec_data <- ggplot() +
-        geom_contour_filled(data = nit_grid, aes(x = x, y = y, z = z), bins = 15) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_d(option = "viridis", name = expression(Nitrate ~ (mu * "mol/kg"))) +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated NITRATE_FINAL (D-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    } else {
-      p_nit_sec_data <- ggplot(df_nit_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
-        geom_tile(aes(fill = NITRATE_FINAL), width = 1.2, height = 10) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_c(option = "viridis", name = expression(Nitrate ~ (mu * "mol/kg"))) +
-        labs(
-          title = paste0("Float ", float_id, " - NITRATE_FINAL (D-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    }
-    
-    p_nit_sec_qc <- ggplot(df_nit_qc, aes(x = CYCLE_NUMBER, y = PRES, color = NITRATE_FINAL_QC)) +
-      geom_point(alpha = 0.7, size = 1.2) +
-      scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-      scale_color_manual(values = qc_color_scale, drop = FALSE, name = "QC Flag") +
-      labs(title = "NITRATE_FINAL (D-mode) QC Flags Section Map", x = "Cycle Number", y = "Pressure (dbar)") +
-      theme_bw(base_size = 12) + theme(legend.position = "right")
-    
-    p_nit_combined <- (p_nit_sec_data / p_nit_sec_qc) +
-      plot_annotation(
-        title    = paste0("BGC-Argo Float ", float_id, " - NITRATE_FINAL (D-mode) Section DMQC Summary"),
-        subtitle = paste0("Generated on: ", today_str),
-        theme    = theme(plot.title = element_text(face = "bold", size = 14))
-      )
-    
-    ggsave(file.path(dir_qc_summary, sprintf("Float_%d_NITRATE_FINAL_Section_Summary.png", float_id)), plot = p_nit_combined, width = 12, height = 8, dpi = 150)
-  }
+  generate_section_qc_plot(df_summary_base, "PH_IN_SITU_TOTAL", "PH_IN_SITU_TOTAL_QC", "PH RAW (R-mode)", "PH_RAW", col_palette = "magma", unit_expr = "pH (In-Situ)")
+  generate_section_qc_plot(df_summary_base, "PH_IN_SITU_TOTAL_ADJUSTED", "PH_IN_SITU_TOTAL_ADJUSTED_QC", "PH_ADJUSTED (A-mode)", "PH_ADJUSTED", col_palette = "magma", unit_expr = "pH (In-Situ)")
+  generate_section_qc_plot(df_summary_base, "PH_FINAL", "PH_FINAL_QC", "PH_FINAL (D-mode)", "PH_FINAL", col_palette = "magma", unit_expr = "pH (In-Situ)")
   
-  # -------------------------------------------------------------------------
-  # 2. pH SUMMARY SECTION PLOTS
-  # -------------------------------------------------------------------------
-  
-  # 2A. pH RAW (R-MODE) INTERPOLATED SECTION & QC SUMMARY PLOT
-  if ("PH_IN_SITU_TOTAL" %in% names(df_summary_base) && any(!is.na(df_summary_base$PH_IN_SITU_TOTAL) & df_summary_base$PH_IN_SITU_TOTAL != -99999.0)) {
-    ph_raw_grid <- create_interpolated_grid(df_summary_base, "PH_IN_SITU_TOTAL")
-    
-    df_ph_raw_qc <- df_summary_base %>% 
-      filter(!is.na(PH_IN_SITU_TOTAL) & PH_IN_SITU_TOTAL != -99999.0) %>% 
-      mutate(PH_IN_SITU_TOTAL_QC = as.character(coalesce(as.character(PH_IN_SITU_TOTAL_QC), "3")))
-    
-    if (!is.null(ph_raw_grid)) {
-      p_ph_raw_sec_data <- ggplot() +
-        geom_contour_filled(data = ph_raw_grid, aes(x = x, y = y, z = z), bins = 15) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_d(option = "magma", name = "pH (In-Situ)") +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated PH_IN_SITU_TOTAL RAW (R-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    } else {
-      p_ph_raw_sec_data <- ggplot(df_ph_raw_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
-        geom_tile(aes(fill = PH_IN_SITU_TOTAL), width = 1.2, height = 10) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_c(option = "magma", name = "pH (In-Situ)") +
-        labs(
-          title = paste0("Float ", float_id, " - PH_IN_SITU_TOTAL RAW (R-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    }
-    
-    p_ph_raw_sec_qc <- ggplot(df_ph_raw_qc, aes(x = CYCLE_NUMBER, y = PRES, color = PH_IN_SITU_TOTAL_QC)) +
-      geom_point(alpha = 0.7, size = 1.2) +
-      scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-      scale_color_manual(values = qc_color_scale, drop = FALSE, name = "QC Flag") +
-      labs(title = "PH_IN_SITU_TOTAL RAW (R-mode) QC Flags Section Map", x = "Cycle Number", y = "Pressure (dbar)") +
-      theme_bw(base_size = 12) + theme(legend.position = "right")
-    
-    p_ph_raw_combined <- (p_ph_raw_sec_data / p_ph_raw_sec_qc) +
-      plot_annotation(
-        title    = paste0("BGC-Argo Float ", float_id, " - PH_IN_SITU_TOTAL RAW (R-mode) Section DMQC Summary"),
-        subtitle = paste0("Generated on: ", today_str),
-        theme    = theme(plot.title = element_text(face = "bold", size = 14))
-      )
-    
-    ggsave(file.path(dir_qc_summary, sprintf("Float_%d_PH_IN_SITU_TOTAL_RAW_Section_Summary.png", float_id)), plot = p_ph_raw_combined, width = 12, height = 8, dpi = 150)
-  }
-  
-  # 2B. pH ADJUSTED (A-MODE) INTERPOLATED SECTION & QC SUMMARY PLOT
-  if ("PH_IN_SITU_TOTAL_ADJUSTED" %in% names(df_summary_base) && any(!is.na(df_summary_base$PH_IN_SITU_TOTAL_ADJUSTED) & df_summary_base$PH_IN_SITU_TOTAL_ADJUSTED != -99999.0)) {
-    ph_adj_grid <- create_interpolated_grid(df_summary_base, "PH_IN_SITU_TOTAL_ADJUSTED")
-    
-    df_ph_adj_qc <- df_summary_base %>% 
-      filter(!is.na(PH_IN_SITU_TOTAL_ADJUSTED) & PH_IN_SITU_TOTAL_ADJUSTED != -99999.0) %>% 
-      mutate(PH_IN_SITU_TOTAL_ADJUSTED_QC = as.character(coalesce(as.character(PH_IN_SITU_TOTAL_ADJUSTED_QC), "1")))
-    
-    if (!is.null(ph_adj_grid)) {
-      p_ph_adj_sec_data <- ggplot() +
-        geom_contour_filled(data = ph_adj_grid, aes(x = x, y = y, z = z), bins = 15) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_d(option = "magma", name = "pH (In-Situ)") +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated PH_IN_SITU_TOTAL_ADJUSTED (A-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    } else {
-      p_ph_adj_sec_data <- ggplot(df_ph_adj_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
-        geom_tile(aes(fill = PH_IN_SITU_TOTAL_ADJUSTED), width = 1.2, height = 10) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_c(option = "magma", name = "pH (In-Situ)") +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated PH_IN_SITU_TOTAL_ADJUSTED (A-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    }
-    
-    p_ph_adj_sec_qc <- ggplot(df_ph_adj_qc, aes(x = CYCLE_NUMBER, y = PRES, color = PH_IN_SITU_TOTAL_ADJUSTED_QC)) +
-      geom_point(alpha = 0.7, size = 1.2) +
-      scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-      scale_color_manual(values = qc_color_scale, drop = FALSE, name = "QC Flag") +
-      labs(title = "PH_IN_SITU_TOTAL_ADJUSTED (A-mode) QC Flags Section Map", x = "Cycle Number", y = "Pressure (dbar)") +
-      theme_bw(base_size = 12) + theme(legend.position = "right")
-    
-    p_ph_adj_combined <- (p_ph_adj_sec_data / p_ph_adj_sec_qc) +
-      plot_annotation(
-        title    = paste0("BGC-Argo Float ", float_id, " - PH_IN_SITU_TOTAL_ADJUSTED (A-mode) Section DMQC Summary"),
-        subtitle = paste0("Generated on: ", today_str),
-        theme    = theme(plot.title = element_text(face = "bold", size = 14))
-      )
-    
-    ggsave(file.path(dir_qc_summary, sprintf("Float_%d_PH_IN_SITU_TOTAL_ADJUSTED_Section_Summary.png", float_id)), plot = p_ph_adj_combined, width = 12, height = 8, dpi = 150)
-  }
-  
-  # 2C. pH FINAL (D-MODE) INTERPOLATED SECTION & QC SUMMARY PLOT
-  if ("PH_FINAL" %in% names(df_summary_base) && any(df_summary_base$PH_FINAL != -99999.0)) {
-    ph_grid <- create_interpolated_grid(df_summary_base, "PH_FINAL")
-    
-    df_ph_qc <- df_summary_base %>% 
-      filter(PH_FINAL != -99999.0) %>% 
-      mutate(PH_FINAL_QC = as.character(PH_FINAL_QC))
-    
-    if (!is.null(ph_grid)) {
-      p_ph_sec_data <- ggplot() +
-        geom_contour_filled(data = ph_grid, aes(x = x, y = y, z = z), bins = 15) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_d(option = "magma", name = "pH (In-Situ)") +
-        labs(
-          title = paste0("Float ", float_id, " - Interpolated PH_FINAL (D-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    } else {
-      p_ph_sec_data <- ggplot(df_ph_qc, aes(x = CYCLE_NUMBER, y = PRES)) +
-        geom_tile(aes(fill = PH_FINAL), width = 1.2, height = 10) +
-        scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-        scale_fill_viridis_c(option = "magma", name = "pH (In-Situ)") +
-        labs(
-          title = paste0("Float ", float_id, " - PH_FINAL (D-mode) Section Profile"),
-          x     = "Cycle Number",
-          y     = "Pressure (dbar)"
-        ) +
-        theme_bw(base_size = 12) + theme(legend.position = "right")
-    }
-    
-    p_ph_sec_qc <- ggplot(df_ph_qc, aes(x = CYCLE_NUMBER, y = PRES, color = PH_FINAL_QC)) +
-      geom_point(alpha = 0.7, size = 1.2) +
-      scale_y_reverse(limits = c(max(df_summary_base$PRES, na.rm = TRUE), 0)) +
-      scale_color_manual(values = qc_color_scale, drop = FALSE, name = "QC Flag") +
-      labs(title = "PH_FINAL (D-mode) QC Flags Section Map", x = "Cycle Number", y = "Pressure (dbar)") +
-      theme_bw(base_size = 12) + theme(legend.position = "right")
-    
-    p_ph_combined <- (p_ph_sec_data / p_ph_sec_qc) +
-      plot_annotation(
-        title    = paste0("BGC-Argo Float ", float_id, " - PH_FINAL (D-mode) Section DMQC Summary"),
-        subtitle = paste0("Generated on: ", today_str),
-        theme    = theme(plot.title = element_text(face = "bold", size = 14))
-      )
-    
-    ggsave(file.path(dir_qc_summary, sprintf("Float_%d_PH_FINAL_Section_Summary.png", float_id)), plot = p_ph_combined, width = 12, height = 8, dpi = 150)
-  }
-  
-  # --- STEP 4: EXPORT COMBINED CSV ---
+  # --- STEP 5: EXPORT COMBINED CSV ---
   combo_output_path <- file.path(combo_output_dir, sprintf("NITRATE_PH_%d.csv", float_id))
   
   df_export_prep <- df_all %>%
@@ -1061,7 +799,6 @@ for (woko in float_ids) {
   df_combo_export <- df_export_prep %>%
     select(-any_of(c(
       "WMOID", "ID", "NITRATE_QC", "PH_IN_SITU_TOTAL_QC", 
-      "NITRATE_ADJUSTED", "PH_IN_SITU_TOTAL_ADJUSTED", 
       "NITRATE_CALCULATED_ADJ", "PH_CALCULATED_ADJ", 
       "float_ids", "TIME", "launch_date", "LAUNCH_DATE", 
       "launch_date_str"
@@ -1070,13 +807,16 @@ for (woko in float_ids) {
     relocate(
       any_of(c(
         "FLOAT_NUM", "CYCLE_NUMBER", "PRES", "TEMP", "PSAL", 
-        "NITRATE_FINAL", "NITRATE_FINAL_QC", "NITRATE_ADJUSTED_ERROR", 
-        "PH_FINAL", "PH_FINAL_QC", "PH_IN_SITU_TOTAL_ADJUSTED_ERROR"
+        "NITRATE", "NITRATE_ADJUSTED", "NITRATE_FINAL", "NITRATE_FINAL_QC", "NITRATE_ADJUSTED_ERROR", 
+        "PH_IN_SITU_TOTAL", "PH_IN_SITU_TOTAL_ADJUSTED", "PH_FINAL", "PH_FINAL_QC", "PH_IN_SITU_TOTAL_ADJUSTED_ERROR"
       ))
     ) %>%
-    mutate(across(everything(), ~ tidyr::replace_na(., -99999.0)))
+    convert_fill_to_nan() %>%
+    mutate(
+      across(where(is.numeric), ~ ifelse(is.na(.), NaN, .))
+    )
   
-  write.csv(df_combo_export, combo_output_path, row.names = FALSE)
+  write.csv(df_combo_export, combo_output_path, row.names = FALSE, na = "NaN")
   message(sprintf("Successfully exported combined CSV -> %s", combo_output_path))
   message(sprintf("=== COMPLETED PROCESSING FOR FLOAT: %d ===\n", float_id))
 }
